@@ -5,237 +5,212 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from io import BytesIO
 import pandas as pd
 import math
 import tempfile
 import os
+from io import BytesIO
 
-st.set_page_config(page_title="Retail Checkout Simulator (Upgraded)", layout="wide")
+st.set_page_config(page_title="Retail Checkout Simulator", layout="wide")
 
 # -------------------------
 # Utility Functions
 # -------------------------
-def sample_basket_size(mean, sigma):
+
+def safe_float(x, default=float("inf")):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except:
+        return default
+
+def sample_basket(mean, sigma):
     return max(1, int(round(np.random.normal(mean, sigma))))
 
-def sample_service_time_from_basket(basket_size, scan_time=0.3, base_overhead=0.5):
-    return base_overhead + basket_size * scan_time
+def service_time(basket, scan_time, overhead=0.5):
+    return overhead + basket * scan_time
 
-def time_varying_rate(base_rate, pattern, t):
+def arrival_rate(base, pattern, t):
     if pattern == "flat":
-        return base_rate
+        return base
     if pattern == "morning_peak":
-        mu = 120
-        sigma = 60
-        factor = 1 + 1.5 * math.exp(-0.5 * ((t - mu) / sigma) ** 2)
-        return base_rate * factor
+        return base * (1 + 1.5 * math.exp(-0.5*((t-120)/60)**2))
     if pattern == "double_peak":
-        mu1, mu2 = 90, 300
-        sigma = 50
-        factor = 1 + 1.2*math.exp(-0.5*((t-mu1)/sigma)**2) + 1.2*math.exp(-0.5*((t-mu2)/sigma)**2)
-        return base_rate * factor
-    return base_rate
+        return base * (
+            1 +
+            1.2*math.exp(-0.5*((t-90)/50)**2) +
+            1.2*math.exp(-0.5*((t-300)/50)**2)
+        )
+    return base
 
 # -------------------------
 # Simulation Core
 # -------------------------
-class CheckoutSim:
-    def __init__(self, sim_minutes, base_rate, arrival_pattern,
-                 num_checkouts, express_count, express_max_items,
-                 cashier_speeds, basket_mean, basket_sigma,
-                 patience, seed, scan_time):
 
-        self.sim_minutes = sim_minutes
-        self.base_rate = base_rate
-        self.arrival_pattern = arrival_pattern
-        self.num_checkouts = num_checkouts
-        self.express_count = express_count
-        self.express_max_items = express_max_items
-        self.cashier_speeds = cashier_speeds
-        self.basket_mean = basket_mean
-        self.basket_sigma = basket_sigma
-        self.patience = patience
-        self.scan_time = scan_time
+class CheckoutSim:
+
+    def __init__(self, minutes, base_rate, pattern,
+                 checkouts, express_count, express_limit,
+                 speeds, basket_mean, basket_sigma,
+                 patience, seed, scan_time):
 
         random.seed(seed)
         np.random.seed(seed)
 
         self.env = simpy.Environment()
-        self.checkouts = [simpy.Resource(self.env, capacity=1) for _ in range(num_checkouts)]
-        self.shared_queue = simpy.Resource(self.env, capacity=num_checkouts)
+        self.minutes = minutes
+        self.base_rate = base_rate
+        self.pattern = pattern
+        self.num_checkouts = checkouts
+        self.express_count = express_count
+        self.express_limit = express_limit
+        self.speeds = speeds
+        self.basket_mean = basket_mean
+        self.basket_sigma = basket_sigma
+        self.patience = patience
+        self.scan_time = scan_time
+
+        self.checkouts = [simpy.Resource(self.env, capacity=1)
+                          for _ in range(checkouts)]
+        self.shared_queue = simpy.Resource(self.env, capacity=checkouts)
 
         self.events = []
 
     def run(self):
         self.env.process(self.arrivals())
-        self.env.run(until=self.sim_minutes)
+        self.env.run(until=self.minutes)
         return pd.DataFrame(self.events)
 
     def arrivals(self):
         cid = 0
         while True:
-            rate = time_varying_rate(self.base_rate, self.arrival_pattern, self.env.now)
-            lam = max(1e-6, rate / 60)
+            rate = arrival_rate(self.base_rate, self.pattern, self.env.now)
+            lam = max(1e-6, rate/60)
             yield self.env.timeout(random.expovariate(lam))
             cid += 1
             self.env.process(self.customer(cid))
-
-            if self.env.now >= self.sim_minutes:
+            if self.env.now >= self.minutes:
                 break
 
-    def choose_server_shortest(self):
+    def shortest_server(self):
         lens = [len(r.queue) + r.count for r in self.checkouts]
         return int(np.argmin(lens))
 
     def customer(self, cid):
         arrival = self.env.now
-        basket = sample_basket_size(self.basket_mean, self.basket_sigma)
-        is_express = self.express_count > 0 and basket <= self.express_max_items
+        basket = sample_basket(self.basket_mean, self.basket_sigma)
+
+        express = self.express_count > 0 and basket <= self.express_limit
         policy = st.session_state.get("queue_policy", "single")
 
-        if is_express:
-            idx = min(self.choose_server_shortest(), self.express_count - 1)
+        if express:
+            server_idx = min(self.shortest_server(), self.express_count - 1)
+            req = self.checkouts[server_idx].request()
+            yield req
+
         elif policy == "multiple_shortest":
-            idx = self.choose_server_shortest()
+            server_idx = self.shortest_server()
+            req = self.checkouts[server_idx].request()
+            yield req
+
         elif policy == "multiple_random":
-            idx = random.randrange(self.num_checkouts)
-        else:
-            idx = None
+            server_idx = random.randrange(self.num_checkouts)
+            req = self.checkouts[server_idx].request()
+            yield req
 
-        if idx is None:
+        else:  # single shared queue
             req = self.shared_queue.request()
-            if self.patience:
-                result = yield req | self.env.timeout(self.patience)
-                if req not in result:
-                    self.events.append({
-                        "customer_id": cid,
-                        "arrival": arrival,
-                        "basket": basket,
-                        "abandoned": True,
-                        "abandon_time": self.env.now
-                    })
-                    return
-            else:
-                yield req
-
-            server_idx = self.choose_server_shortest()
-            serv_req = self.checkouts[server_idx].request()
-            yield serv_req
-        else:
-            req = self.checkouts[idx].request()
-            if self.patience:
-                result = yield req | self.env.timeout(self.patience)
-                if req not in result:
-                    self.events.append({
-                        "customer_id": cid,
-                        "arrival": arrival,
-                        "basket": basket,
-                        "abandoned": True,
-                        "abandon_time": self.env.now
-                    })
-                    return
-            else:
-                yield req
-            server_idx = idx
+            yield req
+            server_idx = self.shortest_server()
+            req2 = self.checkouts[server_idx].request()
+            yield req2
 
         start = self.env.now
-        base_service = sample_service_time_from_basket(basket, self.scan_time)
-        service_time = base_service / max(1e-6, self.cashier_speeds[server_idx])
+
+        stime = service_time(basket, self.scan_time)
+        stime = stime / max(1e-6, self.speeds[server_idx])
 
         self.events.append({
             "customer_id": cid,
             "arrival": arrival,
-            "basket": basket,
-            "assigned_server": server_idx,
-            "start_service": start,
-            "abandoned": False
+            "start": start,
+            "server": server_idx,
+            "basket": basket
         })
 
-        yield self.env.timeout(service_time)
+        yield self.env.timeout(stime)
 
         end = self.env.now
 
         self.events.append({
             "customer_id": cid,
-            "end_service": end,
-            "assigned_server": server_idx
+            "end": end,
+            "server": server_idx
         })
 
-        self.checkouts[server_idx].release(req if idx is not None else serv_req)
-        if idx is None:
+        self.checkouts[server_idx].release(
+            req2 if policy == "single" and not express else req
+        )
+        if policy == "single" and not express:
             self.shared_queue.release(req)
 
 # -------------------------
 # Animation
 # -------------------------
+
 def build_timelines(df):
-    records = {}
+    recs = {}
     for _, row in df.iterrows():
-        cid = row.get("customer_id")
-        if cid not in records:
-            records[cid] = {"customer_id": cid}
-        if "arrival" in row and not pd.isna(row.get("arrival")):
-            records[cid]["arrival"] = row.get("arrival")
-        if "start_service" in row:
-            records[cid]["start"] = row.get("start_service")
-            records[cid]["server"] = row.get("assigned_server")
-        if "end_service" in row:
-            records[cid]["end"] = row.get("end_service")
-        if row.get("abandoned", False):
-            records[cid]["abandoned"] = True
-            records[cid]["abandon_time"] = row.get("abandon_time")
-    return list(records.values())
+        cid = row["customer_id"]
+        if cid not in recs:
+            recs[cid] = {}
+        for col in row.index:
+            recs[cid][col] = row[col]
+    return list(recs.values())
 
-def make_animation(timelines, sim_minutes, num_checkouts):
+def make_animation(timelines, minutes, checkouts):
 
-    frame_step = 0.5
-    times = np.arange(0, sim_minutes + frame_step, frame_step)
+    frame_step = 2.0  # fewer frames for reliability
+    times = np.arange(0, minutes + frame_step, frame_step)
 
     fig, ax = plt.subplots(figsize=(8,4))
-    ax.set_xlim(0, 30)
-    ax.set_ylim(-1, num_checkouts + 1)
-    ax.axis('off')
-
-    server_x = 22
-
-    def get_positions(t):
-        xs, ys, cs = [], [], []
-        waiting = [r for r in timelines
-                   if r.get("arrival", 1e9) <= t and
-                   not r.get("abandoned", False) and
-                   (r.get("start") is None or r.get("start") > t)]
-
-        for r in timelines:
-            arrival = r.get("arrival", 1e9)
-            if arrival > t:
-                continue
-
-            if r.get("abandoned", False) and r.get("abandon_time", 1e9) <= t:
-                xs.append(0); ys.append(-0.5); cs.append("gray")
-                continue
-
-            start = r.get("start")
-            end = r.get("end")
-            server = r.get("server")
-
-            if start and start <= t and (not end or t < end):
-                xs.append(server_x); ys.append(server); cs.append("blue")
-            elif end and t >= end:
-                xs.append(server_x + 4); ys.append(server); cs.append("green")
-            else:
-                pos = waiting.index(r) if r in waiting else 0
-                xs.append(2 + pos); ys.append(pos % num_checkouts); cs.append("orange")
-
-        return xs, ys, cs
 
     def update(i):
         ax.clear()
         ax.set_xlim(0, 30)
-        ax.set_ylim(-1, num_checkouts + 1)
-        ax.axis('off')
+        ax.set_ylim(-1, checkouts+1)
+        ax.axis("off")
+
         t = times[i]
-        xs, ys, cs = get_positions(t)
+
+        waiting = [
+            r for r in timelines
+            if safe_float(r.get("arrival")) <= t
+            and safe_float(r.get("start"), None) is None
+        ]
+
+        xs, ys, cs = [], [], []
+
+        for r in timelines:
+            arr = safe_float(r.get("arrival"))
+            start = r.get("start")
+            end = r.get("end")
+            server = r.get("server", 0)
+
+            if arr > t:
+                continue
+
+            if start and start <= t and (not end or t < end):
+                xs.append(22); ys.append(server); cs.append("blue")
+            elif end and t >= end:
+                xs.append(26); ys.append(server); cs.append("green")
+            else:
+                pos = waiting.index(r) if r in waiting else 0
+                xs.append(2 + pos)
+                ys.append(pos % max(1, checkouts))
+                cs.append("orange")
+
         ax.scatter(xs, ys, s=80, c=cs)
         ax.set_title(f"Minute {t:.1f}")
 
@@ -245,67 +220,65 @@ def make_animation(timelines, sim_minutes, num_checkouts):
     tmp_name = tmp.name
     tmp.close()
 
-    anim.save(tmp_name, writer="pillow", fps=6)
+    anim.save(tmp_name, writer="pillow", fps=4)
     plt.close(fig)
 
     with open(tmp_name, "rb") as f:
         data = f.read()
-
     os.remove(tmp_name)
+
     return BytesIO(data)
 
 # -------------------------
-# Streamlit UI
+# UI
 # -------------------------
+
 st.sidebar.title("Simulation Controls")
 
-sim_hours = st.sidebar.slider("Sim length (hours)", 0.5, 8.0, 2.0)
-base_rate = st.sidebar.slider("Arrival rate (cust/hr)", 10, 500, 150)
-arrival_pattern = st.sidebar.selectbox("Arrival pattern", ["flat","morning_peak","double_peak"])
+sim_hours = st.sidebar.slider("Sim hours", 0.5, 6.0, 1.5)
+base_rate = st.sidebar.slider("Customers per hour", 10, 400, 120)
+pattern = st.sidebar.selectbox("Arrival pattern", ["flat","morning_peak","double_peak"])
 queue_policy = st.sidebar.selectbox("Queue policy", ["single","multiple_shortest","multiple_random"])
 st.session_state["queue_policy"] = queue_policy
 
-num_checkouts = st.sidebar.slider("Checkouts", 1, 10, 4)
-express_count = st.sidebar.slider("Express checkouts", 0, num_checkouts, 1)
-express_max_items = st.sidebar.slider("Express max items", 1, 20, 8)
+checkouts = st.sidebar.slider("Checkouts", 1, 8, 4)
+express_count = st.sidebar.slider("Express lanes", 0, checkouts, 1)
+express_limit = st.sidebar.slider("Express max items", 1, 20, 8)
 
-cashier_speeds = [st.sidebar.number_input(f"Speed {i+1}",0.2,3.0,1.0,0.1) for i in range(num_checkouts)]
+speeds = [st.sidebar.number_input(f"Speed {i+1}",0.2,3.0,1.0,0.1)
+          for i in range(checkouts)]
 
 basket_mean = st.sidebar.number_input("Avg basket size",1,100,12)
 basket_sigma = st.sidebar.number_input("Basket sigma",0.0,50.0,3.0)
-patience_input = st.sidebar.number_input("Patience (min, 0=none)",0.0,100.0,0.0)
-patience = None if patience_input <= 0 else patience_input
-
 scan_time = st.sidebar.number_input("Scan time per item",0.05,1.0,0.25,0.01)
-seed = st.sidebar.number_input("Random seed",0,999999,42)
+seed = st.sidebar.number_input("Seed",0,999999,42)
 
-run_button = st.sidebar.button("Run Simulation")
+run = st.sidebar.button("Run Simulation")
 
-st.title("Retail Checkout Simulator — Upgraded")
+st.title("Retail Checkout Simulator")
 
-if run_button:
-    with st.spinner("Running simulation..."):
-        sim = CheckoutSim(
-            sim_minutes=int(sim_hours*60),
-            base_rate=base_rate,
-            arrival_pattern=arrival_pattern,
-            num_checkouts=num_checkouts,
-            express_count=express_count,
-            express_max_items=express_max_items,
-            cashier_speeds=cashier_speeds,
-            basket_mean=basket_mean,
-            basket_sigma=basket_sigma,
-            patience=patience,
-            seed=seed,
-            scan_time=scan_time
-        )
+if run:
+    sim = CheckoutSim(
+        minutes=int(sim_hours*60),
+        base_rate=base_rate,
+        pattern=pattern,
+        checkouts=checkouts,
+        express_count=express_count,
+        express_limit=express_limit,
+        speeds=speeds,
+        basket_mean=basket_mean,
+        basket_sigma=basket_sigma,
+        patience=None,
+        seed=seed,
+        scan_time=scan_time
+    )
 
-        df = sim.run()
+    df = sim.run()
 
     if not df.empty:
         timelines = build_timelines(df)
-        gif = make_animation(timelines, int(sim_hours*60), num_checkouts)
-        st.image(gif.getvalue(), caption="Checkout Flow Animation")
+        gif = make_animation(timelines, int(sim_hours*60), checkouts)
+        st.image(gif.getvalue(), caption="Checkout Animation")
         st.dataframe(df.head(200))
     else:
         st.write("No customers processed.")
