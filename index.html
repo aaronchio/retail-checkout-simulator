@@ -98,7 +98,7 @@ canvas{display:block;width:100%;}
 <div class="app">
   <header>
     <div class="logo">CHECKOUT<span>SIM</span><span class="badge">V3</span></div>
-    <div style="font-size:.62rem;color:var(--dim);letter-spacing:.1em;"> Competitive Assessment Checkout Experience Sim</div>
+    <div style="font-size:.62rem;color:var(--dim);letter-spacing:.1em;">RETAIL QUEUE SIMULATOR</div>
   </header>
 
   <div class="layout">
@@ -251,13 +251,16 @@ function buildLayout() {
 
 function buildSnake() {
   SNAKE = [];
-  const { W, PAD, WALL, FLOOR } = L;
-  const ROW_H = 22, usW = W - PAD * 2;
-  for (let row = 0; WALL + row * ROW_H + 20 < FLOOR - 10; row++) {
-    const y = WALL + row * ROW_H + 20;
+  const { W, PAD, FLOOR } = L;
+  // Snake only in the bottom ~40% of floor space, above entrance
+  const ZONE_TOP  = FLOOR - 160;
+  const ZONE_BOT  = FLOOR - 22;
+  const ROW_H = 20, usW = W - PAD * 2;
+  for (let row = 0; ZONE_TOP + row * ROW_H < ZONE_BOT; row++) {
+    const y = ZONE_TOP + row * ROW_H + 10;
     const ltr = row % 2 === 0;
-    for (let col = 0; col < 10; col++) {
-      const frac = (col + 0.5) / 10;
+    for (let col = 0; col < 12; col++) {
+      const frac = (col + 0.5) / 12;
       SNAKE.push({ x: PAD + (ltr ? frac : 1 - frac) * usW, y });
     }
   }
@@ -265,18 +268,44 @@ function buildSnake() {
 
 // ═══════════════════════════════════════════════
 //  QUEUE TARGETS
+//
+//  The queue is a HORIZONTAL LINE at the bottom of
+//  the canvas, just above the entrance marker.
+//
+//  Slot 0 = front of line (LEFT side, nearest register)
+//  Slot N = back of line  (RIGHT side, new arrivals join here)
+//
+//  Snake mode: zigzags back-and-forth in the bottom zone.
+//  Per-lane:   each lane has its own horizontal sub-row.
 // ═══════════════════════════════════════════════
+
+// Y position of the queue line (single row of people)
+function queueY() { return L.FLOOR - 30; }
+
+// X position for a slot in the master queue (single/snake)
+// Slots spread LEFT → RIGHT across the full canvas width
 function masterTarget(slot) {
   if (P.queueType === 'snake') {
     const s = SNAKE[Math.min(slot, SNAKE.length - 1)];
     return { x: s.x, y: s.y };
   }
-  return { x: L.W / 2, y: L.WALL + 28 + slot * SLOT_GAP };
+  // Single feed: one horizontal line, centred, spreading outward from centre
+  const QY = queueY();
+  const totalW = L.W - L.PAD * 4;
+  const spacing = Math.min(SLOT_GAP, totalW / Math.max(masterQ.length, 1));
+  // Anchor the FRONT of the line to left-centre, grow rightward
+  const startX = L.PAD * 2;
+  return { x: startX + slot * spacing, y: QY };
 }
 
+// Per-lane: each lane gets its own row, stacked above each other if needed
 function laneTarget(laneId, slot) {
+  const QY = queueY();
   const r = L.regs[laneId];
-  return { x: r.qColX, y: r.serveY + 20 + slot * SLOT_GAP };
+  // Each lane's queue fans out horizontally below its register column
+  const spacing = Math.min(SLOT_GAP, (L.W - L.PAD*2) / Math.max(r.laneQ.length, 1));
+  const startX = r.cx - (r.laneQ.length * spacing) / 2;
+  return { x: startX + slot * spacing, y: QY - laneId * 4 };
 }
 
 // ═══════════════════════════════════════════════
@@ -326,15 +355,23 @@ function spawn() {
       if (n < bestLen) { bestLen = n; best = i; }
     });
     c.lane = best;
-    c.slot = L.regs[best].laneQ.length;
     L.regs[best].laneQ.push(c);
-    const t = laneTarget(best, c.slot);
-    c.tx = t.x; c.ty = t.y;
+    // Recompute all slots so spacing adjusts as queue grows
+    L.regs[best].laneQ.forEach((x, i) => {
+      x.slot = i;
+      const t = laneTarget(best, i);
+      x.tx = t.x; x.ty = t.y;
+    });
+    c.slot = L.regs[best].laneQ.length - 1;
   } else {
     c.slot = masterQ.length;
     masterQ.push(c);
-    const t = masterTarget(c.slot);
-    c.tx = t.x; c.ty = t.y;
+    // Recompute all slots so spacing adjusts as queue grows
+    masterQ.forEach((x, i) => {
+      x.slot = i;
+      const t = masterTarget(i);
+      x.tx = t.x; x.ty = t.y;
+    });
   }
 
   c.waitStart = simTime;
@@ -359,10 +396,20 @@ function assign() {
 function serve(reg, c, dedicated) {
   if (dedicated) {
     reg.laneQ.shift();
-    reg.laneQ.forEach((x, i) => { x.slot = i; const t = laneTarget(reg.id, i); x.tx = t.x; x.ty = t.y; });
+    // Recompute spacing now that queue is shorter
+    reg.laneQ.forEach((x, i) => {
+      x.slot = i;
+      const t = laneTarget(reg.id, i);
+      x.tx = t.x; x.ty = t.y;
+    });
   } else {
     masterQ.shift();
-    masterQ.forEach((x, i) => { x.slot = i; const t = masterTarget(i); x.tx = t.x; x.ty = t.y; });
+    // Recompute spacing now that queue is shorter
+    masterQ.forEach((x, i) => {
+      x.slot = i;
+      const t = masterTarget(i);
+      x.tx = t.x; x.ty = t.y;
+    });
   }
 
   reg.busy = true; reg.serving = c;
@@ -477,7 +524,7 @@ function renderFrame() {
   // Queue guides
   drawGuides();
 
-  // Lane dividers
+  // Lane dividers + flow arrows from queue to registers
   for (let i = 1; i < P.numLanes; i++) {
     const dx = PAD + i * L.LW - 1;
     ctx.strokeStyle = 'rgba(30,45,69,.5)'; ctx.lineWidth = 1;
@@ -485,6 +532,14 @@ function renderFrame() {
     ctx.beginPath(); ctx.moveTo(dx, WALL); ctx.lineTo(dx, FLOOR); ctx.stroke();
     ctx.setLineDash([]);
   }
+  // Dashed flow lines: one per register, from queue line up to serve spot
+  const QYf = queueY();
+  L.regs.forEach(r => {
+    ctx.strokeStyle = 'rgba(0,229,255,.07)'; ctx.lineWidth = 2;
+    ctx.setLineDash([4,8]);
+    ctx.beginPath(); ctx.moveTo(r.cx, QYf - 12); ctx.lineTo(r.cx, r.serveY + 14); ctx.stroke();
+    ctx.setLineDash([]);
+  });
 
   // Customers (behind registers)
   allC.forEach(c => { if (c.state !== 'serving' && c.state !== 'walking') drawCust(c); });
@@ -495,59 +550,70 @@ function renderFrame() {
   // Customers (at registers)
   allC.forEach(c => { if (c.state === 'serving' || c.state === 'walking') drawCust(c); });
 
-  // Entrance line
-  ctx.strokeStyle = 'rgba(0,229,255,.15)'; ctx.lineWidth = 1.5;
+  // Entrance line (customers spawn here and immediately walk to queue)
+  ctx.strokeStyle = 'rgba(0,229,255,.2)'; ctx.lineWidth = 1.5;
   ctx.setLineDash([8,7]);
   ctx.beginPath(); ctx.moveTo(PAD, FLOOR); ctx.lineTo(W-PAD, FLOOR); ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(0,229,255,.3)'; ctx.font = '9px Space Mono'; ctx.textAlign = 'center';
-  ctx.fillText('▲  STORE ENTRANCE  ▲', W/2, FLOOR+14);
+  ctx.fillStyle = 'rgba(0,229,255,.35)'; ctx.font = '9px Space Mono'; ctx.textAlign = 'center';
+  ctx.fillText('▲  CUSTOMERS ARRIVE HERE  ▲', W/2, FLOOR+14);
 
-  // Queue count badges
+  // Queue count badge — shown just above the queue line
+  const QY = queueY();
   if (P.queueType === 'dedicated') {
     regs.forEach(r => {
-      if (r.laneQ.length > 0) {
-        const by = Math.min(r.serveY + 20 + r.laneQ.length * SLOT_GAP + 14, FLOOR - 16);
-        badge(r.cx, by, r.laneQ.length);
-      }
+      if (r.laneQ.length > 0) badge(r.cx, QY - 22, r.laneQ.length);
     });
   } else if (masterQ.length > 0) {
-    const by = Math.min(L.WALL + 28 + masterQ.length * SLOT_GAP + 14, FLOOR - 16);
-    badge(L.W/2, by, masterQ.length);
+    badge(L.W/2 + 60, QY - 22, masterQ.length);
   }
 }
 
 function drawGuides() {
   const { W, PAD, WALL, FLOOR } = L;
-  const gTop = WALL + 10, gBot = FLOOR - 10;
+  const QY    = queueY();           // y of the queue line
+  const ZONE  = FLOOR - 22;         // bottom of waiting zone
+  const ZTOP  = QY - 16;            // top of waiting zone highlight
 
   if (P.queueType === 'snake' && SNAKE.length > 1) {
-    ctx.strokeStyle = 'rgba(168,255,62,.06)';
-    ctx.lineWidth = 18; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // Snake rope path drawn in bottom zone
+    ctx.strokeStyle = 'rgba(168,255,62,.07)';
+    ctx.lineWidth = 16; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.beginPath(); ctx.moveTo(SNAKE[0].x, SNAKE[0].y);
     SNAKE.forEach(s => ctx.lineTo(s.x, s.y)); ctx.stroke();
-    ctx.strokeStyle = 'rgba(168,255,62,.18)';
+    ctx.strokeStyle = 'rgba(168,255,62,.2)';
     ctx.lineWidth = 1.5; ctx.setLineDash([6,6]); ctx.stroke(); ctx.setLineDash([]);
 
   } else if (P.queueType === 'single') {
-    const cx = W / 2;
-    ctx.fillStyle = 'rgba(0,229,255,.025)';
-    ctx.fillRect(cx - 18, gTop, 36, gBot - gTop);
-    ctx.strokeStyle = 'rgba(0,229,255,.22)';
-    ctx.lineWidth = 1; ctx.setLineDash([5,9]);
-    ctx.beginPath(); ctx.moveTo(cx, gTop); ctx.lineTo(cx, gBot); ctx.stroke();
+    // Horizontal band at bottom = the waiting zone
+    ctx.fillStyle = 'rgba(0,229,255,.03)';
+    ctx.fillRect(PAD*2, ZTOP, W - PAD*4, 32);
+    // Horizontal dashed line = the queue line itself
+    ctx.strokeStyle = 'rgba(0,229,255,.25)';
+    ctx.lineWidth = 1; ctx.setLineDash([6, 8]);
+    ctx.beginPath(); ctx.moveTo(PAD*2, QY); ctx.lineTo(W - PAD*2, QY); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.strokeStyle = 'rgba(0,229,255,.1)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(cx-18, gTop); ctx.lineTo(cx-18, gBot); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(cx+18, gTop); ctx.lineTo(cx+18, gBot); ctx.stroke();
+    // Left cap (front of line marker)
+    ctx.fillStyle = 'rgba(0,229,255,.5)';
+    ctx.font = '8px Space Mono'; ctx.textAlign = 'left';
+    ctx.fillText('FRONT', PAD*2, QY - 6);
+    ctx.fillStyle = 'rgba(0,229,255,.3)';
+    ctx.textAlign = 'right';
+    ctx.fillText('BACK', W - PAD*2, QY - 6);
 
   } else if (P.queueType === 'dedicated') {
+    // One horizontal band per lane at the bottom
     L.regs.forEach(r => {
-      ctx.fillStyle = 'rgba(0,229,255,.02)';
-      ctx.fillRect(r.qColX - 14, gTop, 28, gBot - gTop);
-      ctx.strokeStyle = 'rgba(0,229,255,.12)';
+      ctx.fillStyle = 'rgba(0,229,255,.025)';
+      ctx.fillRect(r.cx - L.LW/2 + 4, ZTOP, L.LW - 8, 32);
+      ctx.strokeStyle = 'rgba(0,229,255,.15)';
+      ctx.lineWidth = 1; ctx.setLineDash([4,7]);
+      ctx.beginPath(); ctx.moveTo(r.cx - L.LW/2 + 6, QY); ctx.lineTo(r.cx + L.LW/2 - 6, QY); ctx.stroke();
+      ctx.setLineDash([]);
+      // Dashed line from queue up to register
+      ctx.strokeStyle = 'rgba(0,229,255,.08)';
       ctx.lineWidth = 1; ctx.setLineDash([3,8]);
-      ctx.beginPath(); ctx.moveTo(r.qColX, r.serveY+14); ctx.lineTo(r.qColX, gBot); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(r.cx, r.serveY + 10); ctx.lineTo(r.cx, QY); ctx.stroke();
       ctx.setLineDash([]);
     });
   }
