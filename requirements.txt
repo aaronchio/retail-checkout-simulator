@@ -2,3 +2,5 @@ streamlit>=1.0
 simpy>=4.0.1
 numpy
 matplotlib
+pillow
+pandas
