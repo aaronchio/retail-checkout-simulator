@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The Chio Checkout Flow Simulator</title>
+<title>Checkout Flow Simulator</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root {
@@ -367,6 +367,70 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 .le.join .ev { color: var(--success); }
 .le.done .ev { color: var(--warning); }
 
+
+/* Tooltips */
+.tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tooltip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: help;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.tooltip-icon:hover {
+  background: var(--accent);
+  color: white;
+}
+.tooltip-content {
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--text);
+  color: white;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  width: 240px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+}
+.tooltip-icon:hover + .tooltip-content {
+  opacity: 1;
+  visibility: visible;
+  left: 28px;
+}
+.tooltip-content::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-right: 6px solid var(--text);
+}
+
 /* KPI Dashboard */
 .kpi-panel {
   background: var(--panel);
@@ -470,7 +534,7 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 <body>
 <div class="app">
   <header>
-    <div class="logo">CHIO CHECKOUT<span>SIM</span><span class="badge">V3</span></div>
+    <div class="logo">CHECKOUT<span>SIM</span><span class="badge">V3</span></div>
     <div style="font-size:.62rem;color:var(--dim);letter-spacing:.1em;">RETAIL QUEUE SIMULATOR</div>
   </header>
 
@@ -480,12 +544,26 @@ canvas { display: block; width: 100%; background: #fafbfc; }
       <h2>⚙ Parameters</h2>
 
       <div class="cg">
-        <label>Checkout Lanes <span id="vLanes">4</span></label>
+        <label>
+          <div class="tooltip-wrapper">
+            <span>Checkout Lanes</span>
+            <span class="tooltip-icon">?</span>
+            <div class="tooltip-content">Number of open checkout registers. More lanes = faster service but higher labor costs.</div>
+          </div>
+          <span id="vLanes">4</span>
+        </label>
         <input type="range" id="cLanes" min="1" max="10" value="4">
       </div>
 
       <div class="cg">
-        <label>Customers Arriving <span id="vArrival">6</span>/min</label>
+        <label>
+          <div class="tooltip-wrapper">
+            <span>Customers Arriving</span>
+            <span class="tooltip-icon">?</span>
+            <div class="tooltip-content">How many customers enter the store per minute. Higher = busier store. Use this to simulate rush hour vs. quiet periods.</div>
+          </div>
+          <span id="vArrival">6</span>/min
+        </label>
         <input type="range" id="cArrival" min="1" max="60" value="6">
         <div class="hint"><span>1 (quiet)</span><span>60 (rush hour)</span></div>
       </div>
@@ -493,7 +571,13 @@ canvas { display: block; width: 100%; background: #fafbfc; }
       <hr class="sep">
 
       <div class="cg">
-        <label style="margin-bottom:9px;display:block;color:var(--accent);">Lane Service Time (seconds)</label>
+        <label style="margin-bottom:9px;display:block;color:var(--accent);">
+          <div class="tooltip-wrapper">
+            <span>Lane Service Time</span>
+            <span class="tooltip-icon" style="background:rgba(59,130,246,0.2);color:var(--accent);">?</span>
+            <div class="tooltip-content">How many seconds it takes to fully check out one customer at each lane. Set different speeds per lane to simulate fast/slow cashiers or self-checkout vs. staffed.</div>
+          </div>
+        </label>
         <div style="font-size:.6rem;color:var(--dim);margin-bottom:10px;">How many seconds to fully serve one customer per lane. 0 = instant, 600 = 10 min.</div>
         <div id="laneSliders"></div>
       </div>
@@ -501,7 +585,13 @@ canvas { display: block; width: 100%; background: #fafbfc; }
       <hr class="sep">
 
       <div class="cg">
-        <label style="margin-bottom:9px;">Queue Layout</label>
+        <label style="margin-bottom:9px;">
+          <div class="tooltip-wrapper">
+            <span>Queue Layout</span>
+            <span class="tooltip-icon">?</span>
+            <div class="tooltip-content"><strong>Single Feed:</strong> One line feeds all registers (fairest, like airport security).<br><strong>Snake:</strong> Zigzag path.<br><strong>Per Lane:</strong> Each register has its own line (traditional retail).</div>
+          </div>
+        </label>
         <div class="tg">
           <button class="tb on" data-queue="single">Single Feed</button>
           <button class="tb" data-queue="snake">Snake</button>
@@ -510,7 +600,13 @@ canvas { display: block; width: 100%; background: #fafbfc; }
       </div>
 
       <div class="cg">
-        <label style="margin-bottom:9px;">Customer Mix</label>
+        <label style="margin-bottom:9px;">
+          <div class="tooltip-wrapper">
+            <span>Customer Mix</span>
+            <span class="tooltip-icon">?</span>
+            <div class="tooltip-content"><strong>Normal:</strong> Typical shoppers with natural variation.<br><strong>Slow:</strong> Customers take 60-70% longer (cash payers, couponers).<br><strong>Express:</strong> Customers 50-100% faster (contactless, small baskets).</div>
+          </div>
+        </label>
         <div class="tg">
           <button class="tb on" data-mix="normal">Normal</button>
           <button class="tb" data-mix="slow">Slow</button>
@@ -569,7 +665,14 @@ canvas { display: block; width: 100%; background: #fafbfc; }
           
           <!-- 1. Lane Utilization -->
           <div class="kpi-card">
-            <div class="kpi-card-title"><span class="kpi-icon">⚡</span>Lane Utilization</div>
+            <div class="kpi-card-title">
+          <span class="kpi-icon">⚡</span>
+          <div class="tooltip-wrapper">
+            <span>Lane Utilization</span>
+            <span class="tooltip-icon" style="width:14px;height:14px;font-size:0.65rem;">?</span>
+            <div class="tooltip-content">% of time each lane is actively serving customers. Optimal: 70-85%. Below 70% = wasting labor. Above 85% = customers waiting too long.</div>
+          </div>
+        </div>
             <div class="kpi-value" id="kpi-util">0%</div>
             <div class="kpi-subtitle">Average across all lanes</div>
             <div class="kpi-bar">
@@ -580,7 +683,14 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 
           <!-- 2. Peak Wait Time -->
           <div class="kpi-card">
-            <div class="kpi-card-title"><span class="kpi-icon">⏱️</span>Peak Wait Time</div>
+            <div class="kpi-card-title">
+          <span class="kpi-icon">⏱️</span>
+          <div class="tooltip-wrapper">
+            <span>Peak Wait Time</span>
+            <span class="tooltip-icon" style="width:14px;height:14px;font-size:0.65rem;">?</span>
+            <div class="tooltip-content">Longest wait time experienced by any customer so far. Critical metric for customer satisfaction. Target: under 2 minutes.</div>
+          </div>
+        </div>
             <div class="kpi-value" id="kpi-peak">0s</div>
             <div class="kpi-subtitle">Longest customer wait</div>
             <div class="kpi-bar">
@@ -591,7 +701,14 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 
           <!-- 3. Service Level -->
           <div class="kpi-card">
-            <div class="kpi-card-title"><span class="kpi-icon">🎯</span>Service Level (3min target)</div>
+            <div class="kpi-card-title">
+          <span class="kpi-icon">🎯</span>
+          <div class="tooltip-wrapper">
+            <span>Service Level (3min target)</span>
+            <span class="tooltip-icon" style="width:14px;height:14px;font-size:0.65rem;">?</span>
+            <div class="tooltip-content">% of customers served within 3 minutes. Industry standard SLA. Target: 95%+ for good customer experience. Adjust target by changing slaTarget variable.</div>
+          </div>
+        </div>
             <div class="kpi-value" id="kpi-sla">0%</div>
             <div class="kpi-subtitle"><span id="kpi-sla-count">0</span> customers served within target</div>
             <div class="kpi-bar">
@@ -601,7 +718,14 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 
           <!-- 4. Abandonment Risk -->
           <div class="kpi-card">
-            <div class="kpi-card-title"><span class="kpi-icon">⚠️</span>Abandonment Risk</div>
+            <div class="kpi-card-title">
+          <span class="kpi-icon">⚠️</span>
+          <div class="tooltip-wrapper">
+            <span>Abandonment Risk</span>
+            <span class="tooltip-icon" style="width:14px;height:14px;font-size:0.65rem;">?</span>
+            <div class="tooltip-content">% of people currently waiting who have been in line 5+ minutes. These customers are likely to abandon their carts and leave. Minimize this!</div>
+          </div>
+        </div>
             <div class="kpi-value" id="kpi-abandon">0%</div>
             <div class="kpi-subtitle"><span id="kpi-abandon-count">0</span> customers waiting 5+ min</div>
             <div class="kpi-bar">
@@ -611,7 +735,14 @@ canvas { display: block; width: 100%; background: #fafbfc; }
 
           <!-- 5. What-If Recommendation -->
           <div class="kpi-card">
-            <div class="kpi-card-title"><span class="kpi-icon">💡</span>Optimization Insight</div>
+            <div class="kpi-card-title">
+          <span class="kpi-icon">💡</span>
+          <div class="tooltip-wrapper">
+            <span>Optimization Insight</span>
+            <span class="tooltip-icon" style="width:14px;height:14px;font-size:0.65rem;">?</span>
+            <div class="tooltip-content">AI-powered recommendation based on current performance. Suggests adding/removing lanes, identifying bottlenecks, or confirms optimal setup.</div>
+          </div>
+        </div>
             <div class="kpi-value" style="font-size:1.2rem;" id="kpi-whatif">Analyzing...</div>
             <div class="kpi-subtitle" id="kpi-whatif-detail">Run simulation to see recommendations</div>
           </div>
